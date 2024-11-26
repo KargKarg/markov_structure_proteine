@@ -4,8 +4,7 @@ import networkx as nx
 import random
 import itertools
 import scipy.stats
-
-import scipy.stats
+import matplotlib.pyplot as plt
 
 
 def dico_alphabet() -> dict[str: int]:
@@ -137,24 +136,25 @@ def categoriser(corpus: list[tuple[str, float]]) -> dict[int: dict[str: [list]]]
     return categorie
 
 
-def dico_k_mers(K: int, alphabet: list = string.ascii_lowercase) -> dict[str, int]:
+def dico_k_mers(K: int, alphabet: list[str] = list(string.ascii_lowercase)) -> dict[str, int]:
     """"""
-    return {"".join(kmer): indice for indice, kmer in enumerate(itertools.product(alphabet+"!", repeat=K))}
+    return {"".join(kmer): indice for indice, kmer in enumerate(itertools.product(alphabet+["!"], repeat=K))}
 
 
 def apprentissage_markov_k_mers(sequences: set[str], K: int, alphabet: str = string.ascii_lowercase) -> tuple[np.array]:
     """"""
     alphabet = dico_k_mers(K, alphabet)
-    PI = np.zeros((1, 27**K), dtype=float)
-    A = np.zeros((27**K, 27**K), dtype=float)
+    PI = np.ones((1, len(alphabet)), dtype=float)
+    A = np.ones((len(alphabet), len(alphabet)), dtype=float)
 
     # (!)* -> (!)*
-    A[27**K - 1, 27**K - 1] = 1
+    A[alphabet["!"*K], :] = 0
+    A[alphabet["!"*K], alphabet["!"*K]] = 1
 
     for sequence in sequences:
         PI[0, alphabet[sequence[0: 0+K]]] += 1
 
-        for i in range(1, len(sequence), K):
+        for i in range(K, len(sequence), K):
             mg = sequence[i-1: i-1+K]
             if i+K-1 > len(sequence):
                 mg += "!"*((i+K-1) - len(sequence))
@@ -169,9 +169,6 @@ def apprentissage_markov_k_mers(sequences: set[str], K: int, alphabet: str = str
             A[alphabet[mg], alphabet[md]] += 1
 
     for ligne in range(A.shape[0]):
-        if np.sum(A[ligne, :]) == 0:
-            # PseudoCount
-            A[ligne, :] += 1
         A[ligne, :] = A[ligne, :]/np.sum(A[ligne, :])
 
     return A, PI/np.sum(PI)
@@ -288,3 +285,196 @@ def classifie(sequence: str, modeles: dict[str: tuple[np.array]], K: int, alphab
         resultat[classe] = logvraisemblance_markov_k_mers(sequence, *modele, K, alphabet=alphabet)
     
     return max(resultat, key=resultat.get)
+
+
+def confusion_structure_secondaire(X: np.array, Y: np.array, modeles: dict, K: int, alphabet: str) -> np.array:
+    """"""
+    label_test = valeur_par_classe_sst3(X, Y)
+
+    confusion = np.zeros((3, 3))
+
+    indice = {"C": 0, "E": 1, "H": 2}
+
+    vocabulaire = {"C": "coil", "E": "sheet", "H": "helix"}
+
+    for classe in label_test:
+        erreurs, total = 0, 0
+        for sequence in label_test[classe]:
+
+            if len(sequence) > K:
+                total += 1
+                prediction = classifie(sequence, modeles, K, alphabet)
+                
+                if prediction != classe:
+                    erreurs += 1
+
+                confusion[indice[classe], indice[prediction]] += 1
+                
+        print(f"Pour la classe {classe} ({vocabulaire[classe]}), succès de {round((1-(erreurs/total))*100, 2)}% soit {erreurs} erreurs pour un total de {total}.")
+
+
+    for ligne in range(confusion.shape[0]):
+        confusion[ligne, :] /= sum(confusion[ligne, :])
+
+    fig, ax = plt.subplots()
+    im = ax.imshow(confusion, cmap="viridis")
+    ax.set_xticks(np.arange(len(indice)), labels=vocabulaire.values())
+    ax.set_yticks(np.arange(len(indice)), labels=vocabulaire.values())
+
+    ax.set_title("Matrice de confusion pour la classification par MaxVraisemblance")
+
+    cbar = fig.colorbar(im, ax=ax)
+    cbar.set_label("Proportion")
+
+    for i in range(len(indice)):
+        for j in range(len(indice)):
+            ax.text(j, i, f"{confusion[i, j]:.2f}",
+                        ha="center", va="center", color="red", fontsize=10)
+
+
+    plt.show()
+    plt.close()
+
+    return confusion
+
+
+def labelisation_ss_structure(classes: list):
+    """"""
+    base = []
+    for classe in classes:
+        gamma = 1
+        ss_seq = f"S{gamma}"
+        for i in range(1, len(classe)):
+            if classe[i-1] == classe[i]:
+                ss_seq += f"S{gamma}"
+            else:
+                gamma += 1
+                ss_seq += f"S{gamma}"
+        base.append(ss_seq)
+    
+    return base
+
+
+
+def hmm_apprentissage_k_mers(etats: list[str], observations: list[str], K: int, alphabet_etats: list[str], alphabet_observations: list[str]) -> tuple[np.array]:
+    """"""
+    kalphabet_etats = dico_k_mers(K, alphabet_etats)
+    kalphabet_observations = dico_k_mers(K, alphabet_observations)
+
+    PI = np.ones((1, len(kalphabet_etats)), dtype=float)
+    A = np.ones((len(kalphabet_etats), len(kalphabet_etats)), dtype=float)
+    B = np.ones((len(kalphabet_etats), len(kalphabet_observations)), dtype=float)
+
+    A[kalphabet_etats["!"*K], :] = 0
+    A[kalphabet_etats["!"*K], kalphabet_etats["!"*K]] = 1
+
+    for ss_structure, sequence in zip(etats, observations):
+        PI[0, kalphabet_etats[ss_structure[0: 0+K]]] += 1
+
+        for i in range(K, len(ss_structure), K):
+
+            mgobs = sequence[i: i+K]
+            mgetat = ss_structure[i: i+K]
+
+            if i+K > len(ss_structure):
+                mgobs += "!"*((i+K) - len(sequence))
+                mgetat += "!"*((i+K) - len(ss_structure))
+
+            mdetat = ss_structure[i+K: i+2*K]
+
+            if i+2*K > len(ss_structure):
+                if mdetat == "":
+                    mdetat = "!"*K
+                else:
+                    mdetat += "!"*((i+2*K) - len(ss_structure))
+
+            A[kalphabet_etats[mgetat], kalphabet_etats[mdetat]] += 1
+            B[kalphabet_etats[mgetat], kalphabet_observations[mgobs]] += 1
+
+    for ligne in range(A.shape[0]):
+        A[ligne, :] = A[ligne, :]/np.sum(A[ligne, :])
+
+    for ligne in range(B.shape[0]):
+        B[ligne, :] = B[ligne, :]/np.sum(B[ligne, :])
+
+    return A, PI/np.sum(PI), B
+
+
+def hmm_vraisemblance_k_mers(observation: str, A: np.array, PI: np.array, B: np.array, K: int, alphabet_etats: list[str], alphabet_observations: list[str]) -> float:
+    """"""
+    kalphabet_etats = dico_k_mers(K, alphabet_etats)
+    kalphabet_observations = dico_k_mers(K, alphabet_observations)
+
+    alpha = {0: {kalphabet_etats[classe]: PI[0, kalphabet_etats[classe]]*B[kalphabet_etats[classe], kalphabet_observations[observation[0: K]]] for classe in kalphabet_etats.keys()}}
+
+    for t in range(K, len(observation), K):
+        alpha[t] = {}
+
+        mgobs = observation[t: t+K]
+
+        if t+K > len(observation):
+            mgobs += "!"*((t+K) - len(observation))
+
+        for classe in kalphabet_etats:
+
+            alpha[t][kalphabet_etats[classe]] = 0
+
+            for c2 in kalphabet_etats:
+                alpha[t][kalphabet_etats[classe]] += alpha[t-K][kalphabet_etats[c2]]*A[kalphabet_etats[c2], kalphabet_etats[classe]]
+            
+            alpha[t][kalphabet_etats[classe]] *= B[kalphabet_etats[classe], kalphabet_observations[mgobs]]
+
+    return float(sum(alpha[t].values()))
+
+
+def viterbi(observation: str, A: np.array, PI: np.array, B: np.array, K: int, alphabet_etats: list[str], alphabet_observations: list[str]):
+    """"""
+    Ac = A.copy()
+
+    kalphabet_etats = dico_k_mers(K, alphabet_etats)
+    kalphabet_observations = dico_k_mers(K, alphabet_observations)
+
+    kalphabet_etats_reverse = {value: key for key, value in kalphabet_etats.items()}
+
+    delta = {0: {kalphabet_etats[classe]: PI[0, kalphabet_etats[classe]]*B[kalphabet_etats[classe], kalphabet_observations[observation[0: K]]] for classe in kalphabet_etats.keys()}}
+    psi = {0: {kalphabet_etats[classe]: None for classe in kalphabet_etats.keys()}}
+
+    for classe, indice in kalphabet_etats.items():
+        if "!" in classe:
+            Ac[indice, :] = 0
+
+    for t in range(K, len(observation), K):
+        delta[t] = {}
+        psi[t] = {}
+
+        mgobs = observation[t: t+K]
+
+        if t+K > len(observation):
+            mgobs += "!"*((t+K) - len(observation))
+
+        for classe in kalphabet_etats:
+
+            delta[t][kalphabet_etats[classe]] = 0
+            MAX, st = -np.inf, 0
+
+            for c2 in kalphabet_etats:
+                if delta[t-K][kalphabet_etats[c2]]*Ac[kalphabet_etats[c2], kalphabet_etats[classe]] > MAX:
+                    
+                    MAX = delta[t-K][kalphabet_etats[c2]]*Ac[kalphabet_etats[c2], kalphabet_etats[classe]]
+                    st = kalphabet_etats[c2]
+            
+            delta[t][kalphabet_etats[classe]] = MAX*B[kalphabet_etats[classe], kalphabet_observations[mgobs]]
+            psi[t][kalphabet_etats[classe]] = st
+
+    MAX, st = -np.inf, 0
+    for classe, value in delta[t].items():
+        if value > MAX:
+            MAX = value
+            st = classe
+    seq = [st]
+
+    while t >= 0:
+        seq.append(psi[t][seq[-1]])
+        t -= K
+
+    return list(map(lambda x: kalphabet_etats_reverse[x], seq[::-1][1:]))
