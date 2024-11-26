@@ -154,7 +154,7 @@ def apprentissage_markov_k_mers(sequences: set[str], K: int, alphabet: str = str
     for sequence in sequences:
         PI[0, alphabet[sequence[0: 0+K]]] += 1
 
-        for i in range(K, len(sequence), K):
+        for i in range(1, len(sequence), K):
             mg = sequence[i-1: i-1+K]
             if i+K-1 > len(sequence):
                 mg += "!"*((i+K-1) - len(sequence))
@@ -477,4 +477,32 @@ def viterbi(observation: str, A: np.array, PI: np.array, B: np.array, K: int, al
         seq.append(psi[t][seq[-1]])
         t -= K
 
-    return list(map(lambda x: kalphabet_etats_reverse[x], seq[::-1][1:]))
+    return list(map(lambda x: kalphabet_etats_reverse[x].replace("!", ""), seq[::-1][1:]))
+
+
+def interpolation_ss_structure(observation: str) -> str:
+    """"""
+    for i in range(2, len(observation)-1):
+        if observation[i-1] == observation[i+1]:
+            observation = observation[:i] + observation[i+1] + observation[i+1:]
+    return observation
+
+
+def ss_seq_contigs(etat: str, observation: str) -> tuple[list[str]]:
+    """"""
+    obscontigs, etacontigs = [], []
+    ss_seqobs, ss_seqeta = observation[0], etat[0]
+    for i in range(1, len(observation)):
+        if etat[i] != etat[i-1]:
+            obscontigs.append(ss_seqobs)
+            etacontigs.append(ss_seqeta)
+            ss_seqobs = observation[i]
+            ss_seqeta = etat[i]
+        else:
+            ss_seqobs += observation[i]
+            ss_seqeta += etat[i]
+    
+    obscontigs.append(ss_seqobs)
+    etacontigs.append(ss_seqeta)
+
+    return etacontigs, obscontigs
